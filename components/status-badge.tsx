@@ -1,5 +1,4 @@
 import { cn } from '@/lib/utils'
-
 type Tone = 'neutral' | 'warning' | 'success' | 'danger' | 'info'
 
 const toneClasses: Record<Tone, string> = {

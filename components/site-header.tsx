@@ -1,10 +1,12 @@
 import Link from 'next/link'
-import { HeartHandshake } from 'lucide-react'
+import Image from 'next/image'
 import { buttonVariants } from '@/components/ui/button'
 import { LocaleToggle } from '@/components/locale-toggle'
 import { SignOutButton } from '@/components/auth/sign-out-button'
+import { NotificationsBell } from '@/components/notifications-bell'
 import { getCurrentProfile } from '@/lib/auth'
 import { getDictionary } from '@/lib/i18n/server'
+import { RENTAL_TEXT } from '@/lib/rental-text'
 import { cn } from '@/lib/utils'
 
 export async function SiteHeader() {
@@ -20,15 +22,23 @@ export async function SiteHeader() {
   if (profile?.role === 'admin') {
     links.push({ href: '/admin', label: t.nav.admin })
   }
+  if (profile) {
+    links.push({ href: '/disputes', label: RENTAL_TEXT[locale].disputes })
+  }
 
   return (
-    <header className="sticky top-0 z-40 border-b bg-background/85 backdrop-blur supports-[backdrop-filter]:bg-background/70">
+    <header className="sticky top-0 z-40 border-b bg-background/85 backdrop-blur supports-backdrop-filter:bg-background/70">
       <div className="mx-auto flex h-16 max-w-6xl items-center gap-2 px-4 sm:gap-4">
         <Link href="/" className="flex shrink-0 items-center gap-2 font-semibold text-foreground">
-          <span className="flex size-8 items-center justify-center rounded-full bg-primary text-primary-foreground">
-            <HeartHandshake className="size-4" aria-hidden="true" />
-          </span>
-          <span className="text-lg">{t.brand}</span>
+          <Image
+            src="/icon1.png"
+            alt="Mediselle logo"
+            width={44}
+            height={44}
+            loading="lazy"
+            className="h-11 w-11 object-contain rounded-lg"
+          />
+          <span className="text-xl font-bold tracking-tight">{t.brand}</span>
         </Link>
 
         <nav aria-label="Main" className="hidden items-center gap-1 md:flex">
@@ -39,12 +49,14 @@ export async function SiteHeader() {
               className="rounded-md px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
             >
               {l.label}
+              
             </Link>
           ))}
         </nav>
 
         <div className="ms-auto flex shrink-0 items-center gap-1 sm:gap-2">
           <LocaleToggle locale={locale} label={t.nav.language} />
+          {profile?.role && <NotificationsBell role={profile.role} locale={locale} />}
           {profile?.role === 'seller' && (
             <Link href="/listings/new" className={cn(buttonVariants({ size: 'lg' }), 'hidden sm:inline-flex')}>
               {t.nav.list}

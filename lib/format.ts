@@ -25,12 +25,15 @@ export function formatListingPrice(
 ) {
   if (listing.type !== 'rent') return formatPrice(listing.price, listing.type, locale, t)
 
-  const prices: Record<RentPeriod, number | null> = {
+  const prices: Record<'weekly' | 'monthly', number | null> = {
     weekly: listing.rent_weekly_price,
     monthly: listing.rent_monthly_price,
   }
-  const label = (period: RentPeriod) =>
+  const label = (period: 'weekly' | 'monthly') =>
     period === 'weekly' ? t.listings.perWeek : t.listings.perMonth
+
+  // Custom duration has no listed price; the dashboard shows the duration and the owner's quote
+  if (selectedPeriod === 'custom') return t.request.moreThanMonth
 
   if (selectedPeriod) {
     const selectedPrice = prices[selectedPeriod]

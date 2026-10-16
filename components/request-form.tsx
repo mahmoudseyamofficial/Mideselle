@@ -9,9 +9,10 @@ import { FeeBreakdown } from '@/components/fee-breakdown'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
-import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
+import { useRental } from '@/components/rental-context'
 import { createRequest } from '@/app/actions'
 import { createClient } from '@/lib/supabase/client'
+import { uuid } from '@/lib/uuid'
 import type { Dictionary } from '@/lib/i18n/dictionaries'
 import type { ListingType, RentPeriod } from '@/lib/types'
 
@@ -22,9 +23,6 @@ export function RequestForm({
   userId,
   listingType,
   price,
-  rentPeriods,
-  rentWeeklyPrice,
-  rentMonthlyPrice,
   locale,
   t,
 }: {
@@ -32,35 +30,35 @@ export function RequestForm({
   userId: string
   listingType: ListingType
   price: number | null
-  rentPeriods: RentPeriod[] | null
-  rentWeeklyPrice: number | null
-  rentMonthlyPrice: number | null
   locale: 'ar' | 'en'
   t: Dictionary
 }) {
+  // Rent listings: period, price and custom duration come from the shared context
+  const rental = useRental()
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
   const [submitted, setSubmitted] = useState(false)
-  const [selectedRentPeriod, setSelectedRentPeriod] = useState<RentPeriod | ''>(() =>
-    rentPeriods?.includes('monthly') ? 'monthly' : rentPeriods?.[0] ?? '',
-  )
-  const selectedPrice = listingType === 'rent'
-    ? selectedRentPeriod === 'weekly'
-      ? rentWeeklyPrice
+
+  const isRent = listingType === 'rent'
+  const selectedRentPeriod = rental?.period ?? ''
+  const customDuration = rental?.customDuration ?? ''
+  const isCustom = selectedRentPeriod === 'custom'
+
+  const selectedPrice = isRent ? (rental?.price ?? null) : listingType === 'sell' ? price : null
+  const periodLabel =
+    selectedRentPeriod === 'weekly'
+      ? t.listings.weekly
       : selectedRentPeriod === 'monthly'
-        ? rentMonthlyPrice
-        : null
-    : listingType === 'sell'
-      ? price
-      : null
-  const periodLabel = selectedRentPeriod === 'weekly'
-    ? t.listings.weekly
-    : selectedRentPeriod === 'monthly'
-      ? t.listings.monthly
-      : undefined
+        ? t.listings.monthly
+        : undefined
+
+  const rentIncomplete =
+    isRent && (!selectedRentPeriod || (isCustom ? !customDuration.trim() : selectedPrice === null))
 
   function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault()
+    if (rentIncomplete) return
+
     const form = new FormData(e.currentTarget)
     const file = form.get('document') as File | null
     const message = String(form.get('message') ?? '').trim() || null
@@ -71,7 +69,7 @@ export function RequestForm({
       return
     }
     if (file && file.size > MAX_DOC_BYTES) {
-      setError(t.newListing.photosHelp)
+      setError(t.request.fileTooLarge)
       return
     }
 
@@ -80,7 +78,7 @@ export function RequestForm({
       if (file && file.size > 0) {
         const supabase = createClient()
         const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_')
-        const path = `${userId}/${crypto.randomUUID()}-${safeName}`
+        const path = `${userId}/${uuid()}-${safeName}`
         const { error: uploadError } = await supabase.storage.from('validation-docs').upload(path, file)
         if (uploadError) {
           setError(t.auth.unexpected)
@@ -92,13 +90,23 @@ export function RequestForm({
         listingId,
         message,
         documentPath,
-        rentPeriod: listingType === 'rent' ? selectedRentPeriod || null : null,
+        rentalPeriod: isRent ? (selectedRentPeriod as RentPeriod) : null,
+        customDurationText: isCustom ? customDuration.trim() : null,
       })
       if (result.ok) {
         toast.success(t.request.sent)
         setSubmitted(true)
       } else {
-        toast.error(result.error === 'not_implemented' ? t.common.notImplemented : t.auth.unexpected)
+        if (result.error === 'duplicate') {
+          // The database allows one open request per buyer and device
+          toast.error(
+            locale === 'ar'
+              ? 'لديك طلب مفتوح لهذا الجهاز بالفعل. راجع صفحة "طلباتى" أو ألغِ الطلب الحالي أولاً.'
+              : 'You already have an open request for this device. Check "My requests", or cancel the current one first.',
+          )
+        } else {
+          toast.error(result.error === 'not_implemented' ? t.common.notImplemented : t.auth.unexpected)
+        }
       }
     })
   }
@@ -111,7 +119,13 @@ export function RequestForm({
           <p className="text-sm text-muted-foreground">{t.request.confirmationBody}</p>
         </div>
         {selectedPrice !== null && (
-          <FeeBreakdown price={selectedPrice} locale={locale} t={t} periodLabel={periodLabel} />
+          <FeeBreakdown
+            price={selectedPrice}
+            locale={locale}
+            t={t}
+            periodLabel={periodLabel}
+            deposit={isRent ? rental?.deposit : 0}
+          />
         )}
         <Link href="/dashboard/buyer" className={buttonVariants({ variant: 'outline' })}>
           {t.request.viewRequests}
@@ -122,30 +136,41 @@ export function RequestForm({
 
   return (
     <form onSubmit={onSubmit} className="flex flex-col gap-4">
-      {listingType === 'rent' && (
-        <div className="flex flex-col gap-2">
-          <Label htmlFor="rent-period">{t.request.rentalPeriod}</Label>
-          <NativeSelect
-            id="rent-period"
-            value={selectedRentPeriod}
-            onChange={(event) => setSelectedRentPeriod(event.target.value as RentPeriod)}
-            className="w-full"
-            required
-          >
-            <NativeSelectOption value="" disabled>
-              {t.request.rentalPeriod}
-            </NativeSelectOption>
-            {(rentPeriods ?? []).map((period) => (
-              <NativeSelectOption key={period} value={period}>
-                {t.listings[period]}
-              </NativeSelectOption>
-            ))}
-          </NativeSelect>
+      {isRent && (
+        <div className="flex flex-col gap-2 rounded-xl bg-muted/50 px-4 py-3 text-sm">
+          <p>
+            <span className="text-muted-foreground">{t.request.rentalPeriod}: </span>
+            <span className="font-medium">
+              {selectedRentPeriod === 'weekly'
+                ? t.listings.weekly
+                : selectedRentPeriod === 'monthly'
+                  ? t.listings.monthly
+                  : selectedRentPeriod === 'custom'
+                    ? t.request.moreThanMonth
+                    : '—'}
+            </span>
+          </p>
+          {isCustom && (
+            <div className="flex flex-col gap-2 pt-1">
+              <Label htmlFor="custom-duration">{t.request.customDuration}</Label>
+              <Input
+                id="custom-duration"
+                value={customDuration}
+                onChange={(e) => rental?.setCustomDuration(e.target.value)}
+                placeholder={t.request.customDurationPlaceholder}
+                maxLength={200}
+                className="h-10 bg-background"
+              />
+            </div>
+          )}
         </div>
       )}
-      {selectedPrice !== null && (
+
+      {/* Rent listings show the breakdown near the top of the page; sell listings show it here */}
+      {!isRent && selectedPrice !== null && (
         <FeeBreakdown price={selectedPrice} locale={locale} t={t} periodLabel={periodLabel} />
       )}
+
       <div className="flex flex-col gap-2">
         <Label htmlFor="message">{t.request.message}</Label>
         <Textarea
@@ -156,6 +181,7 @@ export function RequestForm({
           placeholder={t.request.messagePlaceholder}
         />
       </div>
+
       {listingType === 'donate' && (
         <div className="flex flex-col gap-2">
           <Label htmlFor="document">{t.request.docLabel}</Label>
@@ -163,17 +189,14 @@ export function RequestForm({
           <p className="text-xs text-muted-foreground text-pretty">{t.request.docHelp}</p>
         </div>
       )}
+
       {error && (
         <p role="alert" className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">
           {error}
         </p>
       )}
-      <Button
-        type="submit"
-        size="lg"
-        className="h-10"
-        disabled={pending || (listingType === 'rent' && selectedPrice === null)}
-      >
+
+      <Button type="submit" size="lg" className="h-10" disabled={pending || rentIncomplete}>
         {pending && <Loader2 className="animate-spin" aria-hidden="true" />}
         {t.request.send}
       </Button>

@@ -7,6 +7,7 @@ import { SiteFooter } from '@/components/site-footer'
 import { getDictionary } from '@/lib/i18n/server'
 import './globals.css'
 
+
 const plexArabic = IBM_Plex_Sans_Arabic({
   subsets: ['arabic', 'latin'],
   weight: ['400', '500', '600', '700'],
@@ -48,7 +49,7 @@ export default async function RootLayout({
 
   return (
     <html lang={locale} dir={locale === 'ar' ? 'rtl' : 'ltr'} className={plexArabic.variable}>
-      <body className="flex min-h-dvh flex-col antialiased">
+      <body className="flex min-h-dvh flex-col antialiased" suppressHydrationWarning>
         <SiteHeader />
         <div className="flex-1">{children}</div>
         <SiteFooter />

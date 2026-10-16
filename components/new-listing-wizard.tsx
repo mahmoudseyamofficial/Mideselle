@@ -12,8 +12,11 @@ import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { createListing } from '@/app/actions'
 import { createClient } from '@/lib/supabase/client'
 import { cn } from '@/lib/utils'
-import { DEVICE_TYPES, ACTIVE_GOVERNORATES, type DeviceType, type ListingType, type RentPeriod } from '@/lib/types'
+import { uuid } from '@/lib/uuid'
+import { DEVICE_TYPES, ACTIVE_GOVERNORATES, type DeviceType, type ListingType } from '@/lib/types'
 import type { Dictionary, Locale } from '@/lib/i18n/dictionaries'
+import { randomId } from '@/lib/random-id'
+import Image from 'next/image'
 
 const MAX_PHOTOS = 6
 const MAX_BYTES = 5 * 1024 * 1024
@@ -43,11 +46,14 @@ export function NewListingWizard({
   const [condition, setCondition] = useState('')
   const [photos, setPhotos] = useState<Photo[]>([])
   const [price, setPrice] = useState('')
-  const [rentPeriods, setRentPeriods] = useState<RentPeriod[]>(['monthly'])
+  const [governorate, setGovernorate] = useState('')
+
+  // Rent: the owner can offer weekly, monthly, or both, each with its own price
+  const [offerWeekly, setOfferWeekly] = useState(false)
+  const [offerMonthly, setOfferMonthly] = useState(true)
   const [weeklyPrice, setWeeklyPrice] = useState('')
   const [monthlyPrice, setMonthlyPrice] = useState('')
   const [deposit, setDeposit] = useState('')
-  const [governorate, setGovernorate] = useState('')
 
   const n = t.newListing
   const steps = [n.stepType, n.stepDetails, n.stepPhotos, n.stepPrice]
@@ -58,32 +64,43 @@ export function NewListingWizard({
     { id: 'donate' as const, label: t.type.donate, desc: n.donateDesc, Icon: Gift },
   ]
 
+  const rentRows = [
+    {
+      key: 'weekly',
+      on: offerWeekly,
+      setOn: setOfferWeekly,
+      value: weeklyPrice,
+      setValue: setWeeklyPrice,
+      label: n.weekly,
+      priceLabel: n.weeklyPrice,
+    },
+    {
+      key: 'monthly',
+      on: offerMonthly,
+      setOn: setOfferMonthly,
+      value: monthlyPrice,
+      setValue: setMonthlyPrice,
+      label: n.monthly,
+      priceLabel: n.monthlyPrice,
+    },
+  ]
+
+  const depositOk = deposit === '' || Number(deposit) >= 0
+
+  const rentOk =
+    (offerWeekly || offerMonthly) &&
+    (!offerWeekly || Number(weeklyPrice) > 0) &&
+    (!offerMonthly || Number(monthlyPrice) > 0) &&
+    depositOk
+
   function canContinue() {
     if (step === 1) return type !== null
     if (step === 2) return title.trim().length > 2 && deviceType !== '' && condition.trim().length > 9
     if (step === 3) return photos.length > 0
-
-    const hasValidRentPrices =
-      rentPeriods.length > 0 &&
-      rentPeriods.every((period) => {
-        const value = Number(period === 'weekly' ? weeklyPrice : monthlyPrice)
-        return Number.isFinite(value) && value > 0
-      })
-
-    return (
-      governorate !== '' &&
-      (type === 'sell' ? Number(price) > 0 : type === 'rent' ? hasValidRentPrices : true) &&
-      (type !== 'rent' || Number(deposit || 0) >= 0)
-    )
-  }
-
-  function toggleRentPeriod(period: RentPeriod) {
-    setRentPeriods((current) => {
-      const next = current.includes(period)
-        ? current.filter((item) => item !== period)
-        : [...current, period]
-      return (['weekly', 'monthly'] as const).filter((item) => next.includes(item))
-    })
+    if (governorate === '') return false
+    if (type === 'rent') return rentOk
+    if (type === 'sell') return Number(price) > 0
+    return true
   }
 
   function addPhotos(files: FileList | null) {
@@ -110,7 +127,7 @@ export function NewListingWizard({
       const urls: string[] = []
       for (const { file } of photos) {
         const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_')
-        const path = `${userId}/${crypto.randomUUID()}-${safeName}`
+        const path = `${userId}/${randomId()}-${safeName}`
         const { error: uploadError } = await supabase.storage.from('listing-photos').upload(path, file)
         if (uploadError) {
           setError(t.auth.unexpected)
@@ -118,6 +135,8 @@ export function NewListingWizard({
         }
         urls.push(supabase.storage.from('listing-photos').getPublicUrl(path).data.publicUrl)
       }
+
+      const isRent = type === 'rent'
       const result = await createListing({
         type,
         title: title.trim(),
@@ -125,11 +144,13 @@ export function NewListingWizard({
         condition_description: condition.trim(),
         photos: urls,
         price: type === 'sell' ? Number(price) : null,
-        rentPeriods: type === 'rent' ? rentPeriods : [],
-        rentWeeklyPrice: type === 'rent' && rentPeriods.includes('weekly') ? Number(weeklyPrice) : null,
-        rentMonthlyPrice: type === 'rent' && rentPeriods.includes('monthly') ? Number(monthlyPrice) : null,
-        deposit: type === 'rent' ? Number(deposit || 0) : null,
+        rentPeriods: isRent
+          ? [...(offerWeekly ? ['weekly' as const] : []), ...(offerMonthly ? ['monthly' as const] : [])]
+          : [],
+        rentWeeklyPrice: isRent && offerWeekly ? Number(weeklyPrice) : null,
+        rentMonthlyPrice: isRent && offerMonthly ? Number(monthlyPrice) : null,
         governorate,
+        deposit: isRent ? Number(deposit) || 0 : null,
       })
       if (result.ok) {
         toast.success(n.submitted)
@@ -251,13 +272,19 @@ export function NewListingWizard({
               <ul className="grid grid-cols-3 gap-3 sm:grid-cols-4">
                 {photos.map((p, i) => (
                   <li key={p.preview} className="relative aspect-square overflow-hidden rounded-xl border">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={p.preview} alt="" className="size-full object-cover" />
+                    <Image 
+                        loading='lazy'
+                        width={1000}
+                        height={1000}
+                        src={p.preview}
+                        alt="" 
+                        className="size-full object-cover" 
+                    />
                     <button
                       type="button"
                       onClick={() => removePhoto(i)}
                       aria-label={n.removePhoto}
-                      className="absolute end-1.5 top-1.5 flex size-7 items-center justify-center rounded-full bg-background/90 shadow hover:bg-background"
+                      className="absolute inset-e-1.5 top-1.5 flex size-7 items-center justify-center rounded-full bg-background/90 shadow hover:bg-background"
                     >
                       <X className="size-4" aria-hidden="true" />
                     </button>
@@ -270,95 +297,81 @@ export function NewListingWizard({
 
         {step === 4 && (
           <>
+            {type === 'rent' && (
+              <div className="flex flex-col gap-3">
+                <Label>{n.rentalPeriods}</Label>
+                {rentRows.map((r) => (
+                  <div
+                    key={r.key}
+                    className={cn(
+                      'flex flex-col gap-3 rounded-xl border p-4 transition-colors',
+                      r.on && 'border-primary bg-primary/5',
+                    )}
+                  >
+                    <label className="flex cursor-pointer items-center gap-2 font-medium">
+                      <input
+                        type="checkbox"
+                        checked={r.on}
+                        onChange={(e) => r.setOn(e.target.checked)}
+                        className="size-4 accent-primary"
+                      />
+                      {r.label}
+                    </label>
+                    {r.on && (
+                      <div className="flex flex-col gap-2">
+                        <Label htmlFor={`price-${r.key}`}>{r.priceLabel}</Label>
+                        <Input
+                          id={`price-${r.key}`}
+                          type="number"
+                          inputMode="numeric"
+                          min={1}
+                          step={1}
+                          value={r.value}
+                          onChange={(e) => r.setValue(e.target.value)}
+                          className="h-10 bg-background"
+                        />
+                      </div>
+                    )}
+                  </div>
+                ))}
+
+                <div className="flex flex-col gap-2 rounded-xl border p-4">
+                  <Label htmlFor="rent-deposit">{n.deposit}</Label>
+                  <Input
+                    id="rent-deposit"
+                    type="number"
+                    inputMode="numeric"
+                    min={0}
+                    step={1}
+                    value={deposit}
+                    onChange={(e) => setDeposit(e.target.value)}
+                    className="h-10 bg-background"
+                  />
+                  <p className="text-xs text-muted-foreground text-pretty">{n.depositHelp}</p>
+                </div>
+              </div>
+            )}
+
             {type === 'sell' && (
               <div className="flex flex-col gap-2">
                 <Label htmlFor="price">{n.price}</Label>
                 <Input
                   id="price"
                   type="number"
-                  inputMode="decimal"
-                  min={0.01}
-                  step={0.01}
+                  inputMode="numeric"
+                  min={1}
+                  step={1}
                   value={price}
-                  onChange={(event) => setPrice(event.target.value)}
+                  onChange={(e) => setPrice(e.target.value)}
                   className="h-10"
                 />
               </div>
             )}
-            {type === 'rent' && (
-              <div className="flex flex-col gap-4">
-                <fieldset className="flex flex-col gap-2">
-                  <legend className="text-sm font-medium">{n.rentalPeriods}</legend>
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    {([
-                      { period: 'weekly', label: n.weekly },
-                      { period: 'monthly', label: n.monthly },
-                    ] as const).map(({ period, label }) => {
-                      const checked = rentPeriods.includes(period)
-                      return (
-                        <label
-                          key={period}
-                          className={cn(
-                            'flex min-h-12 cursor-pointer items-center gap-3 rounded-xl border px-3 py-2',
-                            checked && 'border-primary bg-primary/5',
-                          )}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={() => toggleRentPeriod(period)}
-                            className="size-4 accent-primary"
-                          />
-                          <span className="text-sm font-medium">{label}</span>
-                        </label>
-                      )
-                    })}
-                  </div>
-                </fieldset>
-                <div className="grid gap-4 sm:grid-cols-2">
-                  {rentPeriods.includes('weekly') && (
-                    <div className="flex flex-col gap-2">
-                      <Label htmlFor="weekly-price">{n.weeklyPrice}</Label>
-                      <Input
-                        id="weekly-price"
-                        type="number"
-                        inputMode="decimal"
-                        min={0.01}
-                        step={0.01}
-                        value={weeklyPrice}
-                        onChange={(event) => setWeeklyPrice(event.target.value)}
-                        className="h-10"
-                      />
-                    </div>
-                  )}
-                  {rentPeriods.includes('monthly') && (
-                    <div className="flex flex-col gap-2">
-                      <Label htmlFor="monthly-price">{n.monthlyPrice}</Label>
-                      <Input
-                        id="monthly-price"
-                        type="number"
-                        inputMode="decimal"
-                        min={0.01}
-                        step={0.01}
-                        value={monthlyPrice}
-                        onChange={(event) => setMonthlyPrice(event.target.value)}
-                        className="h-10"
-                      />
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
+
             {type === 'donate' && (
               <p className="rounded-xl bg-muted px-4 py-3 text-sm text-pretty">{n.donationNote}</p>
             )}
-            {type === 'rent' && (
-              <div className="flex flex-col gap-2">
-                <Label htmlFor="deposit">{n.deposit}</Label>
-                <Input id="deposit" type="number" min={0} step={0.01} value={deposit} onChange={(event) => setDeposit(event.target.value)} className="h-10" />
-                <p className="text-xs text-muted-foreground text-pretty">{n.depositNote}</p>
-              </div>
-            )}
+
             <div className="flex flex-col gap-2">
               <Label htmlFor="gov">{n.governorate}</Label>
               <NativeSelect

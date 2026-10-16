@@ -2,13 +2,16 @@ import { cache } from 'react'
 import type { Metadata } from 'next'
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
-import { ArrowLeft, CalendarDays, MapPin, ShieldCheck } from 'lucide-react'
+import { ArrowLeft, BadgeCheck, CalendarDays, Clock, MapPin, ShieldCheck } from 'lucide-react'
+import { InspectedBadge } from '@/components/inspected-badge'
 import { buttonVariants } from '@/components/ui/button'
 import { StatusBadge } from '@/components/status-badge'
 import { RequestForm } from '@/components/request-form'
 import { ListingImageGallery } from '@/components/listing-image-gallery'
 import { FeeBreakdown } from '@/components/fee-breakdown'
 import { SellerCheckButton } from '@/components/device-check-dialog'
+import { RentalProvider } from '@/components/rental-context'
+import { RentalPicker, RentalPrice } from '@/components/rental-pricing'
 import { getCurrentProfile } from '@/lib/auth'
 import { formatDate, formatListingPrice, governorateName } from '@/lib/format'
 import { formatEgp } from '@/lib/fees'
@@ -70,6 +73,32 @@ export default async function ListingPage({ params }: { params: Promise<{ id: st
     ? await (await createClient()).from('requests').select('id').eq('listing_id', listing.id).eq('status', 'pending').maybeSingle()
     : { data: null }
 
+  // Has this buyer already sent a request that is still open? (one open request per buyer and device)
+  const OPEN_REQUEST_STATUSES = [
+    'pending',
+    'accepted',
+    'pending_seller_inspection',
+    'pending_owner_price',
+    'pending_buyer_acceptance',
+  ]
+  const { data: myOpenRequests } =
+    profile?.role === 'buyer' && !isOwner
+      ? await (await createClient())
+          .from('requests')
+          .select('id, status')
+          .eq('listing_id', listing.id)
+          .eq('buyer_id', profile.id)
+          .in('status', OPEN_REQUEST_STATUSES)
+          .limit(1)
+      : { data: null }
+  const myOpenRequest = myOpenRequests?.[0] ?? null
+
+  // Rent listings with at least one real weekly/monthly price use the interactive picker.
+  // Older rent listings without those prices fall back to the plain price line.
+  const hasRentPrices =
+    listing.type === 'rent' &&
+    (Number(listing.rent_weekly_price) > 0 || Number(listing.rent_monthly_price) > 0)
+
   let panel: React.ReactNode
   if (!profile) {
     panel = (
@@ -80,7 +109,24 @@ export default async function ListingPage({ params }: { params: Promise<{ id: st
   } else if (isOwner) {
     panel = (
       <div className="flex flex-wrap gap-2">
-        <Link href={`/listings/${listing.id}/edit`} className={buttonVariants({ size: 'lg' })}>Edit / تعديل</Link>
+        {listing.availability === 'available' && (
+          <Link href={`/listings/${listing.id}/edit`} className={buttonVariants({ size: 'lg' })}>Edit / تعديل</Link>
+        )}
+        {/* Rented: editing is locked until the device is returned */}
+        {listing.availability === 'rented' && (
+          <>
+            <button
+              type="button"
+              disabled
+              title={t.seller.editLocked}
+              className={buttonVariants({ size: 'lg' })}
+            >
+              Edit / تعديل
+            </button>
+            <p className="order-last w-full text-sm text-muted-foreground">{t.seller.editLocked}</p>
+          </>
+        )}
+        {/* Sold or donated: no edit button at all */}
         <Link href={`/dashboard/seller?listing=${listing.id}`} className={buttonVariants({ variant: 'outline', size: 'lg' })}>View requests / عرض الطلبات</Link>
         {listing.type === 'sell' && pendingSellRequest?.id && (
           <SellerCheckButton requestId={pendingSellRequest.id} triggerType="pre_sale_handover" t={t} />
@@ -89,18 +135,33 @@ export default async function ListingPage({ params }: { params: Promise<{ id: st
     )
   } else if (profile.role !== 'buyer') {
     panel = <p className="text-sm text-muted-foreground">{t.request.sellersCannotRequest}</p>
+  } else if (myOpenRequest) {
+    panel = (
+      <div className="flex flex-col items-start gap-3 rounded-xl bg-muted/50 px-4 py-3 text-sm">
+        <p className="font-medium">
+          {locale === 'ar' ? 'لقد أرسلت طلباً لهذا الجهاز بالفعل' : 'You already sent a request for this device'}
+        </p>
+        <p className="text-muted-foreground">
+          {locale === 'ar' ? 'حالة الطلب' : 'Request status'}:{' '}
+          <span className="font-medium text-foreground">
+            {t.requestStatus[myOpenRequest.status as keyof typeof t.requestStatus] ?? myOpenRequest.status}
+          </span>
+        </p>
+        <Link href="/dashboard/buyer" className={buttonVariants({ variant: 'outline' })}>
+          {t.request.viewRequests}
+        </Link>
+      </div>
+    )
   } else if (!bookable) {
     panel = <p className="text-sm text-muted-foreground">{t.request.unavailable}</p>
   } else {
+    // Rent period / price now come from RentalProvider, so those props are gone
     panel = (
       <RequestForm
         listingId={listing.id}
         userId={profile.id}
         listingType={listing.type}
         price={listing.price}
-        rentPeriods={listing.rent_period}
-        rentWeeklyPrice={listing.rent_weekly_price}
-        rentMonthlyPrice={listing.rent_monthly_price}
         locale={locale}
         t={t}
       />
@@ -125,78 +186,108 @@ export default async function ListingPage({ params }: { params: Promise<{ id: st
           sectionLabel={t.newListing.photos}
         />
 
-        <div className="flex flex-col gap-6">
-          <div className="flex flex-col gap-3">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="rounded-full bg-secondary px-2.5 py-1 text-xs font-medium">
-                {t.type[listing.type]}
-              </span>
-              <span className="text-xs text-muted-foreground">{t.device[listing.device_type]}</span>
-              {listing.certification_status === 'certified' && (
-                <StatusBadge status="certified" label={t.listings.certified} />
-              )}
-            </div>
-            <h1 className="text-3xl font-semibold text-balance">{listing.title}</h1>
-            <p className="text-2xl font-semibold text-primary">
-              {formatListingPrice(listing, locale, t)}
-            </p>
-            {listing.type === 'sell' && listing.price !== null && (
-              <FeeBreakdown price={listing.price} locale={locale} t={t} />
-            )}
-            {listing.type === 'rent' && (
-              <div className="grid gap-3 sm:grid-cols-2">
-                {(listing.rent_period ?? []).map((period) => {
-                  const rentPrice = period === 'weekly'
-                    ? listing.rent_weekly_price
-                    : listing.rent_monthly_price
-                  return rentPrice === null ? null : (
-                    <FeeBreakdown
-                      key={period}
-                      price={rentPrice}
-                      locale={locale}
-                      t={t}
-                      periodLabel={t.listings[period]}
-                    />
-                  )
-                })}
+        {/* The provider wraps the whole column so the picker, price and form share one selection */}
+        <RentalProvider
+          rentPeriods={listing.rent_period}
+          weeklyPrice={listing.rent_weekly_price}
+          monthlyPrice={listing.rent_monthly_price}
+          deposit={listing.deposit}
+        >
+          <div className="flex flex-col gap-6">
+            <div className="flex flex-col gap-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="rounded-full bg-secondary px-2.5 py-1 text-xs font-medium">
+                  {t.type[listing.type]}
+                </span>
+                <span className="text-xs text-muted-foreground">{t.device[listing.device_type]}</span>
+                {listing.certification_status === 'certified' && (
+                  <StatusBadge status="certified" label={t.listings.certified} />
+                )}
+                {listing.last_inspected_at && <InspectedBadge label={t.listings.inspectedByEngineer} />}
               </div>
-            )}
-            {listing.type === 'rent' && (listing.deposit ?? 0) > 0 && (
-              <p className="text-sm text-muted-foreground">
-                {t.listings.deposit}: {formatEgp(listing.deposit as number, locale)}
+
+              <h1 className="text-3xl font-semibold text-balance">{listing.title}</h1>
+
+              {hasRentPrices ? (
+                <>
+                  <RentalPicker t={t} />
+                  <RentalPrice locale={locale} t={t} viewer={isOwner ? 'seller' : 'buyer'} />
+                </>
+              ) : (
+                <p className="text-2xl font-semibold text-primary">
+                  {formatListingPrice(listing, locale, t)}
+                </p>
+              )}
+
+              {listing.type === 'sell' && listing.price !== null && (
+                <FeeBreakdown
+                  price={listing.price}
+                  locale={locale}
+                  t={t}
+                  viewer={isOwner ? 'seller' : 'buyer'}
+                  netLabel={t.seller.walletTypes.sale_earning}
+                />
+              )}
+
+              {/* The breakdown box now includes the deposit. This line only remains for older rentals without a box. */}
+              {listing.type === 'rent' && !hasRentPrices && (listing.deposit ?? 0) > 0 && (
+                <p className="text-sm text-muted-foreground">
+                  {t.listings.deposit}: {formatEgp(listing.deposit as number, locale)}
+                </p>
+              )}
+
+              <ul className="flex flex-col gap-2 text-sm text-muted-foreground">
+                <li className="flex items-center gap-2">
+                  <MapPin className="size-4" aria-hidden="true" />
+                  {governorateName(listing.governorate, locale)}
+                </li>
+                <li className="flex items-center gap-2">
+                  <CalendarDays className="size-4" aria-hidden="true" />
+                  {t.listings.listedOn} {formatDate(listing.created_at, locale)}
+                </li>
+                <li className="flex items-center gap-2">
+                  {listing.certification_status === 'certified' ? (
+                    <ShieldCheck className="size-4" aria-hidden="true" />
+                  ) : (
+                    <Clock className="size-4" aria-hidden="true" />
+                  )}
+                  {listing.certification_status === 'certified'
+                    ? t.listings.reviewedLine
+                    : listing.certification_status === 'rejected'
+                      ? t.certification.rejected
+                      : t.certification.pending}
+                </li>
+                {listing.last_inspected_at && (
+                  <li className="flex items-center gap-2 text-foreground">
+                    <BadgeCheck className="size-4 text-primary" aria-hidden="true" />
+                    {t.listings.inspectedOn} {formatDate(listing.last_inspected_at, locale)}
+                  </li>
+                )}
+              </ul>
+            </div>
+
+            <section className="flex flex-col gap-2">
+              <h2 className="font-medium">{t.listings.condition}</h2>
+              <p className="whitespace-pre-line text-muted-foreground text-pretty">
+                {listing.condition_description}
               </p>
-            )}
-            <ul className="flex flex-col gap-2 text-sm text-muted-foreground">
-              <li className="flex items-center gap-2">
-                <MapPin className="size-4" aria-hidden="true" />
-                {governorateName(listing.governorate, locale)}
-              </li>
-              <li className="flex items-center gap-2">
-                <CalendarDays className="size-4" aria-hidden="true" />
-                {t.listings.listedOn} {formatDate(listing.created_at, locale)}
-              </li>
-              <li className="flex items-center gap-2">
-                <ShieldCheck className="size-4" aria-hidden="true" />
-                {t.home.trust1Title}
-              </li>
-            </ul>
+            </section>
+
+            <section className="flex flex-col gap-3 rounded-2xl border bg-card p-5">
+              <h2 className="font-medium">
+                {isOwner
+                  ? locale === 'ar'
+                    ? 'إدارة هذا الإعلان'
+                    : 'Manage this listing'
+                  : t.request.sendTitle}
+              </h2>
+              {profile?.role === 'buyer' && bookable && !isOwner && (
+                <p className="text-sm text-muted-foreground text-pretty">{t.request.sendBody}</p>
+              )}
+              {panel}
+            </section>
           </div>
-
-          <section className="flex flex-col gap-2">
-            <h2 className="font-medium">{t.listings.condition}</h2>
-            <p className="whitespace-pre-line text-muted-foreground text-pretty">
-              {listing.condition_description}
-            </p>
-          </section>
-
-          <section className="flex flex-col gap-3 rounded-2xl border bg-card p-5">
-            <h2 className="font-medium">{t.request.sendTitle}</h2>
-            {profile?.role === 'buyer' && bookable && !isOwner && (
-              <p className="text-sm text-muted-foreground text-pretty">{t.request.sendBody}</p>
-            )}
-            {panel}
-          </section>
-        </div>
+        </RentalProvider>
       </div>
     </main>
   )
